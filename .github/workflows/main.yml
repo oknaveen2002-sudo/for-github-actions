@@ -1,0 +1,89 @@
+name: CI Build and Deploy WAR to Tomcat
+
+# Trigger the pipeline on every push or pull request to the main branch.
+# You can also trigger it manually from the Actions tab (workflow_dispatch).
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+
+  build:
+    name: Build and Test WAR
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Java (Temurin distribution, JDK 11 to match pom.xml)
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: maven
+
+      # 3. Run unit tests
+      - name: Run tests
+        run: mvn -B test
+
+      # 4. Build the WAR file
+      - name: Build WAR with Maven
+        run: mvn -B clean package
+
+      # 5. Upload the WAR as a build artifact so it can be downloaded
+      #    from the Actions run summary, or used by a later job/workflow.
+      - name: Upload WAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gha-tomcat-demo-war
+          path: target/*.war
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  # OPTIONAL: Deploy the WAR to a remote Apache Tomcat server over SSH/SCP.
+  # This job only runs after "build" succeeds, and only on pushes to main.
+  #
+  # Before enabling this job you must add the following secrets in
+  # GitHub: Settings > Secrets and variables > Actions > New repository secret
+  #   TOMCAT_HOST      - server IP or hostname
+  #   TOMCAT_USER      - SSH username
+  #   TOMCAT_SSH_KEY   - private key with access to the server
+  #   TOMCAT_WEBAPPS   - path to Tomcat's webapps folder, e.g. /opt/tomcat/webapps
+  # ---------------------------------------------------------------------
+  deploy:
+    name: Deploy WAR to Tomcat
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Download WAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gha-tomcat-demo-war
+          path: target
+
+      - name: Copy WAR to Tomcat server via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TOMCAT_HOST }}
+          username: ${{ secrets.TOMCAT_USER }}
+          key: ${{ secrets.TOMCAT_SSH_KEY }}
+          source: "target/*.war"
+          target: ${{ secrets.TOMCAT_WEBAPPS }}
+          strip_components: 1
+
+      - name: Restart Tomcat (optional, via SSH)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.TOMCAT_HOST }}
+          username: ${{ secrets.TOMCAT_USER }}
+          key: ${{ secrets.TOMCAT_SSH_KEY }}
+          script: |
+            sudo systemctl restart tomcat
